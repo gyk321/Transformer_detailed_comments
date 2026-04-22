@@ -1,5 +1,7 @@
 # Transformer全结构
 
+![Snipaste_2026-04-22_19-02-51](C:\Users\10540\Desktop\Transformer_from_scratch\assets\Snipaste_2026-04-22_19-02-51-1776896980586-1.png)
+
 ## make_model 函数详解
 
 ```python
@@ -245,3 +247,121 @@ class PositionalEncoding(nn.Module):
 
 ## 多头注意力机制
 
+多头注意力机制（Multi-Head Attention）是 Transformer 能够如此强大的**绝对核心**。
+
+如果在上一步骤中，位置编码是为了让模型知道词的“位置”，那么多头注意力机制就是为了让模型理解词与词之间的**“多重复杂关系”**。
+
+### 一、 为什么需要“多头”？
+
+想象你在阅读句子 **"The animal didn't cross the street because it was too tired."** 当你试图理解 "it" 指代什么时：
+
+- **注意力头 A** 可能关注语法结构（寻找最近的名词 "animal"）。
+- **注意力头 B** 可能关注语义逻辑（谁会 "tired"？也是 "animal"）。
+- **注意力头 C** 可能关注行为关联（谁在 "cross the street"？）。
+
+如果只有一个注意力头，所有的信息融合在一起容易变得模糊。**多头机制允许模型将数据映射到不同的子空间中，并行地关注不同维度的特征。**
+
+------
+
+### 二、 核心数学公式
+
+首先，标准缩放点积注意力（Scaled Dot-Product Attention）的公式是：
+
+$$\mathrm{Attention}(Q, K, V) = \mathrm{softmax}(\frac{QK^T}{\sqrt{d_k}})V$$
+
+而多头注意力的做法是，将 $Q, K, V$ 分别通过不同的线性变换映射 $h$ 次（$h$ 为头的数量），并行计算上述注意力，最后将结果拼接（Concat）并再次线性映射：
+
+$$\mathrm{MultiHead}(Q, K, V) = \mathrm{Concat}(\mathrm{head_1}, ..., \mathrm{head_h})W^O$$
+
+其中
+
+$$\mathrm{head_i} = \mathrm{Attention}(QW^Q_i, KW^K_i, VW^V_i)$$
+
+------
+
+### 三、 代码逐段深度解析
+
+这份代码将原本复杂的“并行映射”转化为了极其优雅的**矩阵维度变换（Reshape / View）技巧**。这也是 PyTorch 工程实现中最精彩的部分之一。
+
+#### 1. 初始化阶段 (`__init__`)
+
+Python
+
+```
+class MultiHeadedAttention(nn.Module):
+    def __init__(self, h, d_model, dropout=0.1):
+        super(MultiHeadedAttention, self).__init__()
+        assert d_model % h == 0
+        # We assume d_v always equals d_k
+        self.d_k = d_model // h
+        self.h = h
+        self.linears = clones(nn.Linear(d_model, d_model), 4)
+        self.attn = None
+        self.dropout = nn.Dropout(p=dropout)
+```
+
+- **`assert d_model % h == 0`**: 模型的总维度（通常是 512）必须能被头数（通常是 8）整除。这样每个头分到的维度就是 $512 / 8 = 64$ 维（即 `self.d_k`）。
+
+- **`self.linears = clones(nn.Linear(d_model, d_model), 4)`**: **（高能预警）** 按照理论公式，我们需要为 8 个头分别建立 $W^Q, W^K, W^V$ 的权重矩阵。但在工程上那样写非常慢！
+
+  这里的聪明做法是：直接克隆 4 个尺寸为 `(d_model, d_model)` 的全连接层。前 3 个用来同时处理所有头的 $Q, K, V$ 的线性映射，第 4 个用来做最后的输出映射 $W^O$。
+
+#### 2. 前向传播 (`forward`)
+
+这是数据真正流动的过程。假设输入的形状是 `(batch_size, seq_len, d_model)`。
+
+**步骤 1：线性映射与维度拆分 (The Reshape Magic)**
+
+Python
+
+```
+        # 1) Do all the linear projections in batch from d_model => h x d_k
+        query, key, value = [
+            lin(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
+            for lin, x in zip(self.linears, (query, key, value))
+        ]
+```
+
+这是全篇最难懂的一行代码，我们拆开来看：
+
+1. `lin(x)`: 数据先经过全连接层，形状仍为 `(batch_size, seq_len, 512)`。
+2. `.view(nbatches, -1, self.h, self.d_k)`: 将最后的 512 维拆开，变成 `(batch_size, seq_len, 8, 64)`。这标志着我们将词向量切分给了 8 个不同的头。
+3. `.transpose(1, 2)`: 交换第 1 和第 2 维度。形状变成了 **`(batch_size, 8, seq_len, 64)`**。
+   - **为什么要交换？** 因为我们要让第 8 个头（维度索引为 1）表现得像批次（Batch）一样，这样在下一步计算矩阵乘法时，PyTorch 会自动在 8 个头上**并行独立计算**注意力得分！
+
+**步骤 2：并行计算注意力**
+
+Python
+
+```
+        # 2) Apply attention on all the projected vectors in batch.
+        x, self.attn = attention(
+            query, key, value, mask=mask, dropout=self.dropout
+        )
+```
+
+将形状为 `(batch_size, 8, seq_len, 64)` 的 $Q, K, V$ 送入基础的 `attention` 函数。内部通过 `torch.matmul` 会对最后两个维度进行矩阵乘法。得到的结果 `x` 形状依然是 `(batch_size, 8, seq_len, 64)`。
+
+**步骤 3：拼接头并输出**
+
+Python
+
+```
+        # 3) "Concat" using a view and apply a final linear.
+        x = (
+            x.transpose(1, 2)
+            .contiguous()
+            .view(nbatches, -1, self.h * self.d_k)
+        )
+        # ... (del 释放显存操作)
+        return self.linears[-1](x)
+```
+
+1. `x.transpose(1, 2)`: 先把维度换回来，变成 `(batch_size, seq_len, 8, 64)`。
+2. `.contiguous()`: 内存连续化处理（PyTorch中转置后改变形状前的常规操作）。
+3. `.view(nbatches, -1, self.h * self.d_k)`: 把最后两个维度重新合并成 `8 * 64 = 512`。这一步**等价于公式中的 Concat（拼接）操作**，形状变回 `(batch_size, seq_len, 512)`。
+4. 最后，通过第 4 个线性层 `self.linears[-1](x)` 做最后一次信息融合输出。
+
+### 总结
+
+这份代码完美地展现了**“空间换时间”**与**“批处理并行”**的深度学习工程哲学。它没有写任何一个 `for` 循环去挨个处理 8 个头，而是通过精妙的 `view` 和 `transpose`，让底层 GPU 矩阵加速运算一次性搞定了多头注意力的全过程。
