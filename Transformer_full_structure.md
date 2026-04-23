@@ -601,3 +601,6 @@ query, key, value = results
 2. `.contiguous()`: 内存连续化处理（PyTorch中转置后改变形状前的常规操作）。
 3. `.view(nbatches, -1, self.h * self.d_k)`: 把最后两个维度重新合并成 `8 * 64 = 512`。这一步**等价于公式中的 Concat（拼接）操作**，形状变回 `(batch_size, seq_len, 512)`。
 4. 最后，通过第 4 个线性层 `self.linears[-1](x)` 做最后一次信息融合输出。
+
+
+
