@@ -245,6 +245,91 @@ class PositionalEncoding(nn.Module):
 - `requires_grad_(False)`: 再次确保反向传播时不会对位置编码求梯度（节省显存和算力）。
 - **最后一步：** 将词嵌入表示 `x` 与位置编码 `pe` **直接相加**（注意是相加，不是拼接），然后通过 Dropout 层返回。
 
+## 自注意力机制（attention）
+
+这段代码实现的是深度学习中非常著名的**缩放点积注意力机制（Scaled Dot-Product Attention）**，它是 Transformer 模型（也就是 ChatGPT 等大模型的核心基础）的灵魂。
+
+你觉得这段代码难以理解是非常正常的！特别是如果你不太熟悉 PyTorch 的张量（矩阵）操作，它看起来就像一堆晦涩的数学符号。
+
+为了让你更容易理解，我们先抛开代码，用一个**“图书馆找书”**的通俗例子来解释这个过程，然后再逐行拆解代码。
+
+### 📚 通俗比喻：在图书馆找书
+
+想象你走进图书馆想要找资料：
+
+1. **Query (Q - 查询)**：你的搜索意图，比如你在系统里输入了“人工智能”。
+2. **Key (K - 键)**：图书馆里每本书的标签或书名，比如“机器学习”、“Python编程”、“西方历史”。
+3. **Value (V - 值)**：每本书里的实际内容。
+
+**注意力机制是怎么工作的？**
+
+它会把你的搜索意图（Query）和所有书的标签（Key）进行对比，计算出一个“相似度得分”。得分越高的书，说明越符合你的需求。然后，它会根据这些得分，把所有书的内容（Value）按比例混合起来给你。也就是说，如果“机器学习”得分最高，你得到的最终结果里就会包含大量的“机器学习”内容，而几乎没有“西方历史”的内容。
+
+------
+
+### 🧮 核心数学公式
+
+这段代码实际上只是把下面这个优雅的数学公式翻译成了 PyTorch 代码：
+
+$$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V$$
+
+------
+
+### 💻 逐行代码拆解
+
+现在我们逐行来看这段 PyTorch 代码在干什么：
+
+```Python
+def attention(query, key, value, mask=None, dropout=None):
+```
+
+这是定义函数。接收你输入的 `query` (Q)、`key` (K)、`value` (V)。`mask` 用于遮掩不想看到的信息，`dropout` 用于防止模型死记硬背（过拟合）。
+
+```Python
+    d_k = query.size(-1)
+```
+
+**获取维度：** 这一步是获取 Query 向量的长度（也就是词向量的维度）。`.size(-1)` 在 PyTorch 里表示获取张量（多维数组）最后一个维度的大小。我们提取出 $d_k$ 是为了后面的“缩放”做准备。
+
+```Python
+    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
+```
+
+**计算相似度得分：** 这是最核心的一步！
+
+- `torch.matmul(query, key.transpose(-2, -1))`：转置 Key 矩阵的最后两个维度，让 Q 和转置后的 K 进行矩阵乘法（计算点积）。点积越大，说明 Query 和 Key 越相关，注意力分数越高。
+- `/ math.sqrt(d_k)`：这是**缩放（Scaled）**。除以维度 $d_k$ 的平方根。如果不除以它，当维度很大的时候，点积的结果会非常大，导致后面的 softmax 函数失效（梯度消失），模型就学不到东西了。
+
+```Python
+    if mask is not None:
+        scores = scores.masked_fill(mask == 0, -1e9)
+```
+
+**遮掩无用信息（Masking）：** 有时候我们不想让模型看到某些内容（比如在翻译时不能提前看到未来的词，或者句子长度不够用0填充的部分）。`mask == 0` 就是找到这些不需要看的地方，然后用 `.masked_fill` 把它们的得分替换成一个极小的数字（`-1e9`，即负十亿）。这样在下一步转换概率时，这些地方的概率就会变成 0。
+
+```Python
+    p_attn = scores.softmax(dim=-1)
+```
+
+**转化为权重比例：** 对最后一个维度的分数做 Softmax 归一化。`softmax` 是一个魔法函数，它会把刚才算出来的各种得分变成**加起来等于 1 的概率分布**（权重）。比如得分变成 `[0.8, 0.15, 0.05]`。得分越高的项，分配到的权重就越大。
+
+```Python
+    if dropout is not None:
+        p_attn = dropout(p_attn)
+```
+
+**随机丢弃：** 随机丢弃一部分注意力权重。这是深度学习中防止过拟合的常用手段。训练时随机让一些神经元的连接失效，迫使模型学到更鲁棒的特征。
+
+```Python
+    return torch.matmul(p_attn, value), p_attn
+```
+
+**得出最终结果：** 
+
+- `torch.matmul(p_attn, value)`：把刚才算出的权重（概率）乘以实际的内容（Value）。这就是“加权求和”的过程。如果某个 Key 和 Query 很匹配，权重就大，那么对应的 Value 提取出来的信息就多；反之则少。
+
+- 第一个是注意力层的输出结果（新的特征表示），第二个是 `p_attn`（注意力权重矩阵，通常用于可视化，看看模型到底把注意力集中在了哪些词上）。
+
 ## 多头注意力机制
 
 多头注意力机制（Multi-Head Attention）是 Transformer 能够如此强大的**绝对核心**。
@@ -285,18 +370,24 @@ $$\mathrm{head_i} = \mathrm{Attention}(QW^Q_i, KW^K_i, VW^V_i)$$
 
 #### 1. 初始化阶段 (`__init__`)
 
-Python
-
-```
+```Python
 class MultiHeadedAttention(nn.Module):
     def __init__(self, h, d_model, dropout=0.1):
         super(MultiHeadedAttention, self).__init__()
+        
+        # 断言：d_model 必须能被 h 整除
+        # 因为每个头的维度 = d_model / h
         assert d_model % h == 0
-        # We assume d_v always equals d_k
-        self.d_k = d_model // h
-        self.h = h
+        
+        self.d_k = d_model // h  # 每个头的维度，512/8=64
+        self.h = h               # 注意力头数，8
+        
+        # 创建 4 个线性变换层：
+        #   前 3 个用于 Q, K, V 的投影
+        #   第 4 个用于最终输出的投影
         self.linears = clones(nn.Linear(d_model, d_model), 4)
-        self.attn = None
+        
+        self.attn = None         # 保存注意力权重（用于可视化）
         self.dropout = nn.Dropout(p=dropout)
 ```
 
@@ -310,30 +401,181 @@ class MultiHeadedAttention(nn.Module):
 
 这是数据真正流动的过程。假设输入的形状是 `(batch_size, seq_len, d_model)`。
 
-**步骤 1：线性映射与维度拆分 (The Reshape Magic)**
+##### 步骤 1：线性映射与维度拆分
 
-Python
-
-```
-        # 1) Do all the linear projections in batch from d_model => h x d_k
+```Python
+    def forward(self, query, key, value, mask=None):
+        
+        # 1️⃣ 扩展 mask 维度，以便广播到所有头
+        if mask is not None:
+            # 在第 1 维的地方，给我硬塞一个 1 进去。
+            # mask 原来：(batch,  1,  seq_len)
+            # mask 插入：(batch, [1], 1, seq_len)
+            # mask 结果：(batch,  1,  1, seq_len)
+            # 如果你执行 mask.unsqueeze(0)，形状就会变成 (1, batch, 1, seq_len)
+            mask = mask.unsqueeze(1)
+            # 形状: (batch, 1, 1, seq_len) → 可广播到 (batch, h, seq_len, seq_len)(为了触发 PyTorch 的广播机制)
+            # 要把 Mask 和 多头注意力计算出的 Scores 张量(Scores 形状：(batch, head, seq_len, seq_len))相加
+        
+        nbatches = query.size(0)   # # 获取 batch_size
+        
+        # 2️⃣ 对 Q, K, V 做线性变换，然后拆分成多个头
         query, key, value = [
-            lin(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
+            lin(x)             # 线性变换: (batch, seq_len, d_model) → (batch, seq_len, d_model)
+            .view(nbatches, -1, self.h, self.d_k)  # 拆分: (batch, seq_len, d_model) → (batch, seq_len, h, d_k)
+            .transpose(1, 2)                    # 转置: → (batch, h, seq_len, d_k)
             for lin, x in zip(self.linears, (query, key, value))
         ]
 ```
 
 这是全篇最难懂的一行代码，我们拆开来看：
 
-1. `lin(x)`: 数据先经过全连接层，形状仍为 `(batch_size, seq_len, 512)`。
-2. `.view(nbatches, -1, self.h, self.d_k)`: 将最后的 512 维拆开，变成 `(batch_size, seq_len, 8, 64)`。这标志着我们将词向量切分给了 8 个不同的头。
-3. `.transpose(1, 2)`: 交换第 1 和第 2 维度。形状变成了 **`(batch_size, 8, seq_len, 64)`**。
-   - **为什么要交换？** 因为我们要让第 8 个头（维度索引为 1）表现得像批次（Batch）一样，这样在下一步计算矩阵乘法时，PyTorch 会自动在 8 个头上**并行独立计算**注意力得分！
+1. `lin(x)` 中的 `x` 是哪里来的？
 
-**步骤 2：并行计算注意力**
+`x` 来自于这段代码末尾的 `for lin, x in zip(...)` 循环。
 
-Python
+在 Python 中，`zip` 函数会将多个列表/元组打包在一起，然后**同时遍历**它们。我们来看看 `zip(self.linears, (query, key, value))` 做了什么：
 
+*   `self.linears` 是一个包含了 3 个线性层（神经网络层）的列表：`[Linear_1, Linear_2, Linear_3]`。
+*   `(query, key, value)` 是一个包含了 3 个张量（Tensor，可以理解为多维数组）的元组。
+
+`zip` 会把它们按位置配对，每次循环取出一对：
+*   **第 1 次循环**：`lin` = Linear_1，`x` = query
+*   **第 2 次循环**：`lin` = Linear_2，`x` = key
+*   **第 3 次循环**：`lin` = Linear_3，`x` = value
+
+所以，**`x` 只是一个循环变量，它依次代表了 `query`、`key` 和 `value` 这三个输入数据**。`lin(x)` 就是分别对这三个数据做线性变换。
+
+---
+
+2. 这段代码在干什么？（详细拆解）
+
+这段代码的核心目的是：**对输入的 query、key、value 进行线性变换，并把它们“切分”成多个头，为后续计算多头注意力做准备。**
+
+为了让你彻底明白，我们把这个列表推导式（List Comprehension）展开成普通的 `for` 循环，你会发现清晰很多：
+
+```python
+# 原代码是一行的列表推导式，等价于下面的展开写法：
+results = []
+for lin, x in zip(self.linears, (query, key, value)):
+    # 第一步：lin(x) 
+    # 第二步：.view(...)
+    # 第三步：.transpose(...)
+    temp = lin(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
+    results.append(temp)
+
+# 最后把结果分别赋值给新的 query, key, value
+query, key, value = results
 ```
+
+接下来，我们逐个击破这三步在干什么。假设我们输入了一句话，包含 10 个单词，每个单词用 512 维的向量表示，批次大小为 32（即同时处理 32 句话）。此时：
+*   `query`, `key`, `value` 的初始形状都是：`[32, 10, 512]` (即 [批次大小, 句子长度, 特征维度])
+
+第一步：`lin(x)` —— 线性变换
+
+在 PyTorch 中，`Linear` 层本质上是一个矩阵乘法 $y = Wx + b$。这里的作用是把 512 维的向量映射成另一个 512 维的向量（不改变维度，但学习了数据的新表示）。
+
+*   **输入 `x` 的形状**：`[32, 10, 512]`
+*   **输出 `lin(x)` 的形状**：`[32, 10, 512]`（尺寸没变，但数值经过了线性变换）
+
+1. 直觉上，`lin(x)` 在干什么？
+
+你可以把 `lin(x)` 想象成一个**“加工厂”**或者一个**“翻译官”**：
+*   **`x`** 是输入的原材料（比如一句话的数学表示）。
+*   **`lin`** 是加工厂的机器/翻译官的规则。
+*   **`lin(x)`** 就是把原材料送进机器，输出加工后的产品。
+
+在神经网络中，这个加工过程通常叫做**线性变换**或**线性投影**。
+
+---
+
+2. 数学上，`lin(x)` 在干什么？
+
+在 PyTorch 中，`lin` 通常是一个 `nn.Linear` 对象（全连接层）。它的核心数学公式非常简单：$$y = xW^T + b$$
+
+*   **$x$**：你的输入矩阵。
+*   **$W$**：权重矩阵，这是这个加工厂的核心！它是模型通过海量数据**自己学习**出来的参数（也就是神经网络的“脑细胞”）。
+*   **$b$**：偏置向量，也是模型学出来的参数，相当于给输出加个微调。
+*   **$y$**：输出结果，也就是 `lin(x)` 的返回值。
+
+**维度变化（重点）**：
+假设我们在定义模型时写了 `nn.Linear(512, 512)`，这意味着：
+
+*   输入 $x$ 的最后一个维度是 512。
+*   权重 $W$ 的形状是 `[512, 512]`。
+*   输出 $y$ 的最后一个维度也是 512。
+
+结合我们上一轮的例子，输入 `x` 的形状是 `[32, 10, 512]`（32句话，10个词，每个词512维向量）。经过 `lin(x)` 后，**形状依然是 `[32, 10, 512]`**。
+
+---
+
+3. 灵魂拷问：既然输入是 512 维，输出还是 512 维，尺寸都没变，那我还要 `lin(x)` 干嘛？为什么不直接用 `x`？
+
+这是一个非常棒的问题！这也是理解 Transformer 的关键所在。`lin(x)` 的目的根本不是为了改变数据的尺寸，而是为了**改变数据的内容（特征表示）**，这被称为**“投影”**。
+
+想象一下：
+*   你有一篇中文文章（`x`）。
+*   你让一个翻译官把它翻译成英文（`lin_1(x)` -> query）。
+*   你让另一个翻译官把它翻译成法文（`lin_2(x)` -> key）。
+*   你让第三个翻译官把它翻译成日文（`lin_3(x)` -> value）。
+
+虽然中、英、法、日文章包含的**核心信息是一样的**，但它们被转换到了**不同的语言空间**，这样你就可以在不同语言之间寻找规律（比如对比英文和法文的语法相似性）。
+
+在多头注意力机制中：
+*   原始的 `x`（query, key, value 最初可能是一样的）就像是一张普通的照片。
+*   `lin_query(x)` 相当于给照片加了一个**“寻找边缘”**的滤镜，提取出“我要找什么”的特征。
+*   `lin_key(x)` 相当于给照片加了一个**“寻找颜色”**的滤镜，提取出“我有什么特征”的信号。
+*   `lin_value(x)` 相当于给照片加了一个**“提取纹理”**的滤镜，提取出“实际的内容信息”。
+
+**注意：** 代码中的 `zip(self.linears, (query, key, value))` 意味着这里有 **3 个不同的 `lin`**（3 台不同的机器，拥有完全不同的权重 $W$）。所以：
+
+*   `lin1(query)` 生成了真正的 Query。
+*   `lin2(key)` 生成了真正的 Key。
+*   `lin3(value)` 生成了真正的 Value。
+
+它们各自带着不同的任务，把原本相同的输入投射到了三个不同的表示空间中，为后续计算“谁和谁更相关（注意力分数）”做好了准备。
+
+---
+
+4. PyTorch 的黑魔法：为什么写 `lin(x)` 就能算 $y = xW^T + b$？
+
+在 PyTorch 中，一切神经网络模块都是 `nn.Module` 的子类。`nn.Linear` 也是。当你写 `lin = nn.Linear(512, 512)` 时，PyTorch 在后台偷偷帮你做了两件事：
+
+1.  创建了一个形状为 `[512, 512]` 的权重矩阵 $W$，并随机初始化。
+2.  创建了一个形状为 `[512]` 的偏置向量 $b$，并随机初始化。
+
+`nn.Linear` 类内部实现了一个特殊的 `__call__` 方法（Python 的魔法方法）。当你写 `lin(x)` 时，Python 实际上调用的是 `lin.forward(x)`，而 `forward` 函数的底层就是那句矩阵乘法：`torch.matmul(x, W.T) + b`。
+
+所以，`lin(x)` 只是 PyTorch 提供的一种优雅、面向对象的写法，让你不用每次都手写复杂的矩阵乘法公式，直接把数据“喂”给层，它就会自动帮你计算并返回结果。
+
+---
+
+第二步：`.view(nbatches, -1, self.h, self.d_k)` —— 切分多头
+
+这是 PyTorch 中改变张量形状的操作，类似 NumPy 的 `reshape`。在多头注意力中，我们不想用一整个 512 维的空间去算注意力，而是想把它切分成 8 个头（`self.h = 8`），每个头用 64 维（`self.d_k = 64`）去算。$8 \times 64 = 512$。
+
+*   `nbatches`：批次大小，保持不变（32）。
+*   `-1`：这个维度让 PyTorch 自己算，这里代表句子长度（10）。
+*   `self.h`：头的数量（8）。
+*   `self.d_k`：每个头的维度（64）。
+*   **变换前的形状**：`[32, 10, 512]`
+*   **变换后的形状**：`[32, 10, 8, 64]`
+    这一步相当于把原来每个单词的 512 维向量，拆成了 8 份 64 维的小向量。
+
+---
+
+第三步：`.transpose(1, 2)` —— 维度转置
+
+`.transpose(1, 2)` 的意思是把第 1 个维度（句子长度 10）和第 2 个维度（头数 8）交换位置。
+
+为什么要交换？因为后续计算注意力时，我们是**按头**来计算的。我们需要让“头”这个维度靠前，这样每个头就能独立、并行地处理属于自己那个 64 维的小向量。
+
+*   **转置前的形状**：`[32, 10, 8, 64]` (批次, 句长, 头数, 头维)
+*   **转置后的形状**：`[32, 8, 10, 64]` (批次, 头数, 句长, 头维)
+
+##### 步骤 2：并行计算注意力
+
+```Python
         # 2) Apply attention on all the projected vectors in batch.
         x, self.attn = attention(
             query, key, value, mask=mask, dropout=self.dropout
@@ -342,11 +584,9 @@ Python
 
 将形状为 `(batch_size, 8, seq_len, 64)` 的 $Q, K, V$ 送入基础的 `attention` 函数。内部通过 `torch.matmul` 会对最后两个维度进行矩阵乘法。得到的结果 `x` 形状依然是 `(batch_size, 8, seq_len, 64)`。
 
-**步骤 3：拼接头并输出**
+##### 步骤 3：拼接头并输出
 
-Python
-
-```
+```Python
         # 3) "Concat" using a view and apply a final linear.
         x = (
             x.transpose(1, 2)
@@ -361,7 +601,3 @@ Python
 2. `.contiguous()`: 内存连续化处理（PyTorch中转置后改变形状前的常规操作）。
 3. `.view(nbatches, -1, self.h * self.d_k)`: 把最后两个维度重新合并成 `8 * 64 = 512`。这一步**等价于公式中的 Concat（拼接）操作**，形状变回 `(batch_size, seq_len, 512)`。
 4. 最后，通过第 4 个线性层 `self.linears[-1](x)` 做最后一次信息融合输出。
-
-### 总结
-
-这份代码完美地展现了**“空间换时间”**与**“批处理并行”**的深度学习工程哲学。它没有写任何一个 `for` 循环去挨个处理 8 个头，而是通过精妙的 `view` 和 `transpose`，让底层 GPU 矩阵加速运算一次性搞定了多头注意力的全过程。
