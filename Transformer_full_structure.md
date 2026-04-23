@@ -1,6 +1,6 @@
 # Transformer全结构
 
-![Snipaste_2026-04-22_19-02-51](C:\Users\10540\Desktop\Transformer_from_scratch\assets\Snipaste_2026-04-22_19-02-51-1776896980586-1.png)
+![Snipaste_2026-04-22_19-02-51-1776896980586-1](./assets/Snipaste_2026-04-22_19-02-51-1776896980586-1.png)
 
 ## make_model 函数详解
 
