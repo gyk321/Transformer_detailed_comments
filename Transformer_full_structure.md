@@ -109,7 +109,7 @@ def make_model(
     return model
 ```
 
-## 词嵌入层（Word Embeddings Layer）
+## 词嵌入层（Input/Output Embeddings）
 
 将离散的单词（通常表示为整数 ID）转换为模型可以处理的连续且具有固定维度的稠密向量，并对向量进行特定的缩放。
 
@@ -147,11 +147,11 @@ class Embeddings(nn.Module):
         return self.lut(x) * math.sqrt(self.d_model)
 ```
 
-## Transformer 位置编码 (Positional Encoding) 详解
+## Transformer 位置编码 (Positional Encoding) 
 
 ### 一、 核心数学公式
 
-Transformer 论文中使用了不同频率的正弦和余弦函数来生成位置编码：
+Transformer 论文中使用了不同频率的正弦和余弦函数来生成位置编码（PositionalEncoding 函数）：
 
 $PE_{(pos, 2i)} = \sin(pos / 10000^{2i / d_{\text{model}}})$
 
@@ -247,7 +247,7 @@ class PositionalEncoding(nn.Module):
 
 ## 自注意力机制（attention）
 
-这段代码实现的是深度学习中非常著名的**缩放点积注意力机制（Scaled Dot-Product Attention）**，它是 Transformer 模型（也就是 ChatGPT 等大模型的核心基础）的灵魂。
+这段代码实现的是深度学习中非常著名的**缩放点积注意力机制（Scaled Dot-Product Attention）**，它是 Transformer 模型（也就是 ChatGPT 等大模型的核心基础）的灵魂（attention 函数）。
 
 你觉得这段代码难以理解是非常正常的！特别是如果你不太熟悉 PyTorch 的张量（矩阵）操作，它看起来就像一堆晦涩的数学符号。
 
@@ -330,11 +330,9 @@ def attention(query, key, value, mask=None, dropout=None):
 
 - 第一个是注意力层的输出结果（新的特征表示），第二个是 `p_attn`（注意力权重矩阵，通常用于可视化，看看模型到底把注意力集中在了哪些词上）。
 
-## 多头注意力机制
+## 多头注意力机制(Multi-Head Attention)
 
-多头注意力机制（Multi-Head Attention）是 Transformer 能够如此强大的**绝对核心**。
-
-如果在上一步骤中，位置编码是为了让模型知道词的“位置”，那么多头注意力机制就是为了让模型理解词与词之间的**“多重复杂关系”**。
+多头注意力机制就是为了让模型理解词与词之间的**“多重复杂关系”** （MultiHeadedAttention 函数）。
 
 ### 一、 为什么需要“多头”？
 
@@ -602,5 +600,182 @@ query, key, value = results
 3. `.view(nbatches, -1, self.h * self.d_k)`: 把最后两个维度重新合并成 `8 * 64 = 512`。这一步**等价于公式中的 Concat（拼接）操作**，形状变回 `(batch_size, seq_len, 512)`。
 4. 最后，通过第 4 个线性层 `self.linears[-1](x)` 做最后一次信息融合输出。
 
+## 位置前馈网络(Feed Forward)
 
+在 Transformer 的编码器（Encoder）和解码器（Decoder）中，每一层都包含两个主要的子层：一个是多头注意力机制（Multi-Head Attention），另一个就是这个**前馈神经网络（Feed-Forward Network, 简称 FFN）**。
 
+让我们结合你提供的代码，逐行拆解这个类的作用和原理（PositionwiseFeedForward 函数）：
+
+### 1. 核心数学原理
+
+这个前馈网络本质上是一个包含两个线性变换（Linear）和一个 ReLU 激活函数的两层全连接神经网络。它的数学公式可以表示为：
+
+$$\text{FFN}(x) = \max(0, xW_1 + b_1)W_2 + b_2$$
+
+- $W_1$ 和 $b_1$ 是第一层线性变换的权重和偏置。
+- $\max(0, \cdot)$ 代表 ReLU 激活函数。
+- $W_2$ 和 $b_2$ 是第二层线性变换的权重和偏置。
+
+### 2. 代码详细拆解
+
+```Python
+class PositionwiseFeedForward(nn.Module):
+    def __init__(self, d_model, d_ff, dropout=0.1):
+        super(PositionwiseFeedForward, self).__init__()
+        # 第一层线性变换：将维度从 d_model 映射到更大的 d_ff
+        self.w_1 = nn.Linear(d_model, d_ff)
+        # 第二层线性变换：将维度从 d_ff 映射回原始的 d_model
+        self.w_2 = nn.Linear(d_ff, d_model)
+        # Dropout 层，用于防止过拟合
+        self.dropout = nn.Dropout(dropout)
+```
+
+**初始化参数 (`__init__`)：**
+
+- `d_model`：模型的基础维度（在标准 Transformer 中通常是 512）。这是输入和最终输出的特征维度。
+- `d_ff`：前馈网络中间隐藏层的维度（通常比 `d_model` 大得多，标准论文中是 2048）。这形成了一个“升维再降维”的结构，允许模型在更高维度的空间中提取非线性特征。
+- `dropout`：失活率，默认 0.1。
+
+```Python
+    def forward(self, x):
+        # 1. x 输入到第一层线性网络 self.w_1(x)
+        # 2. 经过 .relu() 激活函数引入非线性
+        # 3. 经过 dropout 层进行正则化
+        # 4. 最后通过第二层线性网络 self.w_2 输出
+        return self.w_2(self.dropout(self.w_1(x).relu()))
+```
+
+**前向传播 (`forward`) 流程：**
+
+这里完美对应了上面提到的数学公式。数据依次流经：**线性层 1 $\rightarrow$ ReLU 激活 $\rightarrow$ Dropout $\rightarrow$ 线性层 2**。
+
+### 3. 为什么叫 "Position-wise"（逐位置）？
+
+这是理解这个网络最关键的一点。在 Transformer 中，输入数据 `x` 的形状通常是 `(batch_size, sequence_length, d_model)`（比如：批次大小，句子长度，词向量维度）。
+
+- **注意力机制（Attention）**的作用是让句子中的不同单词（不同位置）**互相交流**，混合信息。
+- **Position-wise FFN** 的作用则是对句子中的**每一个单词（每一个位置）独立地应用完全相同的这两层神经网络**。在 FFN 这一步，位置 1 的单词和位置 2 的单词之间**没有任何信息交互**。
+
+你可以把它想象成：注意力层负责梳理词与词之间的关系（全局上下文），而前馈层负责将梳理好的每个词的信息进一步加工和提炼（局部特征增强）。
+
+## 残差连接与层归一化(Add & Norm)
+
+**Add & Norm**（残差连接与层归一化）是 Transformer 模型中极其重要的“基础设施”。如果没有它，Transformer 根本无法堆叠到几十甚至上百层（也就是无法训练出今天的大型语言模型）。
+
+顾名思义，它由两部分组成：**Add（残差连接）** 和 **Norm（层归一化）**。让我们掰开揉碎来详细看看。(SublayerConnection 函数)
+
+### 1. Add：残差连接 (Residual Connection)
+
+**核心公式：**$$Output = x + \text{Sublayer}(x)$$
+
+*(其中 $x$ 是输入，$\text{Sublayer}$ 指的是多头注意力层或前馈神经网络层)*
+
+**它的原理是什么？**
+
+在传统的神经网络中，数据经过一层处理后，原来的输入 $x$ 就被“抛弃”了，输出的是经过非线性变换后的全新特征。
+
+但在残差连接中，我们把**处理前的原始输入 $x$** 和**处理后的结果 $\text{Sublayer}(x)$** 加在一起，作为最终的输出。
+
+**为什么必须要有 Add？**
+
+- **解决梯度消失问题：** 在训练非常深的神经网络时，误差（梯度）在反向传播时需要经过无数次的乘法，很容易趋近于 0（梯度消失），导致靠近输入层的参数无法更新。
+- **提供“信息高速公路”：** 加法操作（$+$）在求导时，梯度是直接原样传导的（即乘以 1）。这意味着梯度可以无损地直接跳过某些层，传回很浅的网络。这让几十层甚至上百层的网络变得非常容易训练。
+
+------
+
+### 2. Norm：层归一化 (Layer Normalization)
+
+**核心公式：**$$\text{LayerNorm}(x) = \gamma \frac{x - \mu}{\sigma + \epsilon} + \beta$$
+
+*(其中 $\mu$ 是均值，$\sigma$ 是方差，$\gamma$ 和 $\beta$ 是模型可学习的缩放和平移参数，$\epsilon$ 是防止分母为 0 的极小值)*
+
+**它的原理是什么？**
+
+假设一个词汇的向量维度是 512（`d_model = 512`）。层归一化会强行把这 512 个数字的**均值变成 0，方差变成 1**。然后再乘上一个可学习的参数 $\gamma$，加上一个可学习的偏置 $\beta$（让模型自己决定需不需要恢复一部分原来的分布特征）。
+
+我把代码拆分成**“初始化”**和**“前向计算”**两部分来逐行解释：
+
+#### 1. 初始化部分 (`__init__`)：准备可学习的参数
+
+```Python
+def __init__(self, features, eps=1e-6):
+    super(LayerNorm, self).__init__()
+    # self.a_2 对应公式里的缩放参数 γ (Gamma)
+    self.a_2 = nn.Parameter(torch.ones(features))
+    # self.b_2 对应公式里的平移参数 β (Beta)
+    self.b_2 = nn.Parameter(torch.zeros(features))
+    # 防止除以 0 的极小值 ε (Epsilon)
+    self.eps = eps
+```
+
+- **`features`**: 输入的特征维度（也就是 Transformer 里的 `d_model`，比如 512）。
+
+- **`nn.Parameter(...)`**: 这是 PyTorch 中非常关键的一步！普通的 Tensor 是不会被优化器更新的。套上 `nn.Parameter` 后，PyTorch 就会知道：“哦，**这两个变量是模型的参数，我需要在反向传播时计算它们的梯度并更新它们。**”
+
+- **为什么 `a_2` 初始化为全 1，`b_2` 初始化为全 0？**
+
+  这保证了在模型刚开始训练的第一步，$\gamma$ 是 1，$\beta$ 是 0。此时模型仅仅是在做纯粹的标准化（把均值变 0，方差变 1），不对数据做额外的缩放和平移。随着训练的进行，模型会自己学会到底需不需要偏离标准正态分布。
+
+------
+
+#### 2. 前向计算部分 (`forward`)：核心逻辑
+
+在 NLP 中，输入 `x` 的形状通常是 3 维的：`[batch_size, sequence_length, features]`（比如 `[2, 3, 512]`）。
+
+```Python
+def forward(self, x):
+    # 1. 计算均值 μ (mu)
+    mean = x.mean(-1, keepdim=True)
+    # 2. 计算标准差 σ (sigma)
+    std = x.std(-1, keepdim=True)
+    # 3. 执行归一化并进行缩放和平移
+    return self.a_2 * (x - mean) / (std + self.eps) + self.b_2
+```
+
+这里的几个参数设置极为精妙，完美体现了 Layer Norm 的特性：
+
+- **为什么用 `dim=-1`？**
+
+  `-1` 在 Python 中代表**最后一个维度**。在 `[batch, seq, features]` 中，最后一个维度就是 `features`（也就是词向量的 512 维）。
+
+  这完美呼应了我们上一轮说的：**Layer Norm 只对“某一个词自己”进行归一化。** 它顺着这 512 个数字求一个均值和方差，完全不管其他的词，也不管其他的句子。
+
+- **为什么必须要有 `keepdim=True`？**
+
+  如果你的输入 `x` 是 `[2, 3, 512]`。
+
+  如果不加 `keepdim`，求均值后结果形状会缩水成 `[2, 3]`。
+
+  加了 `keepdim=True`，结果形状会保持为 `[2, 3, 1]`。
+
+  **这非常重要！** 因为下一步你要用 `x - mean`。在 PyTorch（以及 Numpy）的广播机制（Broadcasting）中，只有当两者的维度数一样，且对应维度可以扩展时，才能相减。`[2, 3, 512]` 减去 `[2, 3, 1]` 是合法的（系统会自动把那个 `1` 复制 512 份去对齐相减）。
+
+- **`std + self.eps`**：分母加上极小值 `eps`，纯粹是为了防止方差刚好为 0 时出现除以零导致程序崩溃（NaN）。
+
+**为什么要用 Layer Norm，而不是 CV 里常用的 Batch Norm？**
+
+- 在自然语言处理（NLP）中，每个句子的长度通常是不同的。如果我们像图像处理那样使用批归一化（Batch Normalization，跨越整个 Batch 去求某个特征维度的均值），效果会非常差，因为很多位置为了对齐被填充了无效的 Padding（例如 0）。
+- **Layer Norm 是针对“每一个词”独立进行的**。它不去管别人，只在当前这个词的 512 维特征内部进行归一化。这使得训练过程更加平稳，对句子长度不敏感。
+
+------
+
+### 3. Add 与 Norm 的组合方式（关键知识点）
+
+细心的你可能会发现，在你提供的哈佛大学代码中，Add 和 Norm 的执行顺序与原始论文（包括你上传的那张图）有一点点出入。这就是学术界常说的 **Post-Norm** 与 **Pre-Norm** 之争：
+
+#### A. 原始论文 (Post-Norm)
+
+这是你那张图里画的顺序：**先计算网络 -> 然后 Add -> 最后 Norm**
+
+$$Output = LayerNorm(x + \text{Sublayer}(x))$$
+
+- **特点：** 理论上效果好，但在层数很深时，训练早期非常不稳定，需要非常谨慎地设计“学习率预热”（Warm-up）机制。
+
+#### B. 你提供的代码及现代主流实现 (Pre-Norm)
+
+看你之前 SublayerConnection 代码里的这行：`x + self.dropout(sublayer(self.norm(x)))`。它的顺序是：**先 Norm -> 然后计算网络 -> 最后 Add**
+
+$$Output = x + \text{Sublayer}(LayerNorm(x))$$
+
+- **特点：** 原始输入 $x$ 有一条完全没有任何阻碍（连 Norm 都没有）的直达通道。**这使得即使网络非常深，在初始化阶段也能非常稳定地训练。**
+- **现状：** 包括 GPT 系列、LLaMA 系列在内的绝大多数现代大语言模型，采用的都是这种 **Pre-Norm** 架构。
