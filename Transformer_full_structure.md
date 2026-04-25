@@ -843,11 +843,79 @@ return self.sublayer[1](x, self.feed_forward)
 3. **Dropout**：对前馈网络的输出进行随机失活。
 4. **残差连接 (Residual Connection)**：将进入第二步的原始 `x` 与前馈网络处理后的结果相加。
 
-### 总结
+## 解码器层 (DecoderLayer)
 
-简单来说，`EncoderLayer` 的 `forward` 就像一条流水线，对输入数据 `x` 依次进行了两次升级处理：
+为了更好地理解这段代码，你可以结合 Transformer 的架构图来看：
 
-1. **第一次升级（自注意力）**：让句子中的每一个词都去“看”一眼其他的词，理解上下文关系。
-2. **第二次升级（前馈网络）**：对包含了上下文信息的每个词汇独立进行更深层次的特征提取。
+![Snipaste_2026-04-25_01-27-53](./assets/Snipaste_2026-04-25_01-27-53.png)
 
-在这两次升级的外围，它使用 `SublayerConnection` 严谨地包上了 **“层归一化 (LayerNorm) -> 核心计算 -> Dropout -> 残差相加”** 这套标准流程，最终输出了处理完毕的张量，准备送入下一个 `EncoderLayer` 或是作为最终的编码特征流向解码器 (Decoder)。
+在 Transformer 中，解码器由多个完全相同的 `DecoderLayer` 堆叠而成（论文中是 6 层）。每个 `DecoderLayer` 内部包含 **三个子层 (Sublayers)**。
+
+下面我为你逐行详细拆解这段代码：
+
+### 1. 初始化方法 `__init__`
+
+这里定义了解码器层所需的各个组件。
+
+```Python
+def __init__(self, size, self_attn, src_attn, feed_forward, dropout):
+    super(DecoderLayer, self).__init__()
+    self.size = size                  # 模型的维度 (d_model，论文中通常是 512)
+    self.self_attn = self_attn        # 第一个子层：掩码多头自注意力机制 (Masked Multi-Head Self-Attention)
+    self.src_attn = src_attn          # 第二个子层：交叉注意力机制 (Cross-Attention / Encoder-Decoder Attention)
+    self.feed_forward = feed_forward  # 第三个子层：前馈神经网络 (Feed Forward Network)
+    self.sublayer = clones(SublayerConnection(size, dropout), 3) # 克隆 3 个残差连接+层归一化模块
+```
+
+**关键点解析：**
+
+- **三个核心机制：** `self_attn`、`src_attn` 和 `feed_forward` 分别对应解码器中的三个主要处理步骤。
+- **`SublayerConnection`：** 在 Transformer 中，每个子层（注意力层或前馈层）的外部都有一个**残差连接 (Residual Connection)**，随后紧跟一个**层归一化 (Layer Normalization)**。`SublayerConnection` 就是封装了这个逻辑的模块。因为这里有 3 个子层，所以使用 `clones` 函数复制了 3 份（这里的 `clones` 是该教程中自定义的一个深拷贝工具函数）。
+
+------
+
+### 2. 前向传播方法 `forward`
+
+这里定义了数据如何流经这三个子层。了解这一部分的关键在于弄清楚 **Q (Query)、K (Key)、V (Value)** 的来源。
+
+```Python
+def forward(self, x, memory, src_mask, tgt_mask):
+    m = memory # memory 是编码器 (Encoder) 最后一层的输出
+```
+
+- **`x`**: 当前解码器层的输入（在第一层时，它是加上了位置编码的目标序列词向量）。
+- **`memory`**: 编码器 (Encoder) 的最终输出，它包含了源语言句子的全部上下文信息。
+- **`src_mask`**: 源序列掩码（用于屏蔽 `memory` 中的 `<pad>` 填充字符，防止注意力计算在无意义的空白上）。
+- **`tgt_mask`**: 目标序列掩码（这是一个**下三角矩阵**，用于实现“掩码自注意力”，防止解码器在预测当前词时“偷看”到未来的词）。
+
+#### 子层 1：掩码多头自注意力 (Masked Self-Attention)
+
+```Python
+x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask))
+```
+
+- 这一步处理目标序列自身的内部关系。
+- **Q, K, V 的来源：** 这里的输入是 `(x, x, x)`，意味着 Query, Key, Value **全部来自解码器当前的输入 `x`**。
+- **Mask 的作用：** 传入了 `tgt_mask`。这非常关键！在生成序列时，当前位置只能看到它自己和它之前的词，不能看到后面的词。
+- **Lambda 函数：** `sublayer[0]` 期望接收输入 `x` 和一个只接受单参数的处理函数。使用 `lambda x: ...` 是为了将多参数的 `self_attn` 包装成单参数函数传给 `sublayer` 统一处理残差和归一化。
+
+#### 子层 2：交叉注意力 (Cross-Attention)
+
+```Python
+x = self.sublayer[1](x, lambda x: self.src_attn(x, m, m, src_mask))
+```
+
+- 这一步是解码器和编码器之间进行信息交互的地方，解码器在这里寻找源句子中对当前翻译最有用的信息。
+- **Q, K, V 的来源：** 注意看参数是 `(x, m, m)`。
+  - **Query (`x`)**：来自**上一个子层（自注意力层）的输出**。它代表解码器当前已经生成的内容状态。
+  - **Key (`m`) 和 Value (`m`)**：来自**编码器的输出 `memory`**。它代表了原始输入句子的信息。
+- **通俗理解：** 解码器拿着自己当前的诉求（Query），去编码器提供的知识库（Key）中进行匹配，匹配上之后提取出需要的信息（Value）。
+
+#### 子层 3：前馈神经网络 (Feed Forward)
+
+```Python
+return self.sublayer[2](x, self.feed_forward)
+```
+
+- 最后一步，将交叉注意力的输出传入一个两层的全连接网络（中间带有 ReLU 激活函数），进行非线性变换。
+- 完成后，返回最终的 `x`。这个 `x` 将会作为下一层 `DecoderLayer` 的输入，或者如果这是最后一层，就会送入一个线性映射和 Softmax 层去预测下一个词的概率。
