@@ -891,7 +891,7 @@ def forward(self, x, memory, src_mask, tgt_mask):
 #### 子层 1：掩码多头自注意力 (Masked Self-Attention)
 
 ```Python
-x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask))
+``x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask))
 ```
 
 - 这一步处理目标序列自身的内部关系。
@@ -919,3 +919,106 @@ return self.sublayer[2](x, self.feed_forward)
 
 - 最后一步，将交叉注意力的输出传入一个两层的全连接网络（中间带有 ReLU 激活函数），进行非线性变换。
 - 完成后，返回最终的 `x`。这个 `x` 将会作为下一层 `DecoderLayer` 的输入，或者如果这是最后一层，就会送入一个线性映射和 Softmax 层去预测下一个词的概率。
+
+## Testing greedy decode
+
+在 Transformer 中，文本的生成过程叫做**自回归（Autoregressive）**，也就是像人说话一样，一个词一个词地往外蹦，并且下一个词的生成依赖于前面已经说过的词。这段代码就是在测试这个“蹦词”的循环逻辑对不对。我们把这段测试代码拆分成 **“解码器函数内部逻辑”** 和 **“外部执行测试”** 两个部分来详细看：
+
+### 一、 核心函数：`greedy_decode` 的自回归循环
+
+这个函数模拟了模型在实际应用中（比如机器翻译）是如何根据源句子生成目标句子的。
+
+**1. 编码源句子（只做一次）**
+
+```Python
+memory = model.encode(src, src_mask)
+```
+
+- 模型首先把源语言句子 `src` 丢进 Encoder，提取出全部的上下文信息，保存在 `memory` 中。**注意：在整个解码过程中，Encoder 只运行这唯一的一次**，接下来 `memory` 会像字典一样被 Decoder 反复查阅。
+
+**2. 初始化起始符**
+
+```Python
+ys = torch.zeros(1, 1).fill_(start_symbol).type_as(src.data)
+```
+
+这行代码在 Transformer 的解码过程（自回归生成）中起到了**“发令枪”**或**“种子”**的作用。简单来说，它的总目标是：**创建一个初始的张量（Tensor），里面只包含一个起始符号（Start Symbol），作为 Decoder 开始预测第一个词的输入。**
+
+我们按照 PyTorch 的链式调用（Method Chaining）顺序，把它拆解成三个动作来详细看：
+
+1. `torch.zeros(1, 1)`：开辟空间
+
+- **动作**：创建一个形状（Shape）为 `[1, 1]` 的二维张量，里面用 `0` 填充。
+- **物理意义**：
+  - 第一个 `1` 代表 **Batch Size（批次大小）**。我们在测试时一次只翻译/生成一句话，所以是 1。
+  - 第二个 `1` 代表 **Sequence Length（序列长度）**。因为现在刚要开始生成，序列里只有一个词。
+- **潜在问题**：此时默认生成的张量数据类型通常是浮点型（Float），比如 `[[0.]]`。
+
+2. `.fill_(start_symbol)`：填入起始符
+
+- **动作**：把刚刚生成的张量里的所有元素（其实也就是那个唯一的 `0`），替换成 `start_symbol` 的值。
+- **物理意义**：在 NLP 任务中，我们通常会规定一个特殊的标记（Token），比如 `<BOS>` (Begin Of Sentence) 或 `<SOS>` (Start Of Sequence)。在之前的测试代码中，传入的 `start_symbol=1`。
+- **语法细节**：注意 `fill_` 后面跟着一个**下划线 `_`**。在 PyTorch 中，带有下划线的方法代表**“就地修改”（In-place Operation）**。它不会创建一个新的张量，而是直接修改原内存地址上的数据，这可以节省内存。
+- **当前结果**：此时张量变成了 `[[1.]]`。
+
+3. `.type_as(src.data)`：同步数据类型和设备
+
+- **动作**：把当前张量的数据类型（Data Type）和所在的设备（Device，比如 CPU 或 GPU），转换得跟输入张量 `src.data` 一模一样。
+- **物理意义（非常关键！）**：
+  - **统一类型**：自然语言里的词汇 ID 必须是**整数**（通常是 64位整数 `torch.LongTensor`）。如果带着刚刚的浮点数 `[[1.]]` 进到 Embedding 层（词嵌入层）去查表，PyTorch 会直接报错崩溃，因为词典里没有第 “1.0” 个词。`src` 在定义时是 `LongTensor`，所以这个操作把 `ys` 也变成了整数型。
+  - **统一设备**：如果你的 `src` 数据被放到了 GPU 上，而你新生成的 `ys` 默认是在 CPU 上，两者在后面做计算时也会报错（PyTorch 不允许跨设备直接计算）。`.type_as` 顺手把这个问题也解决了
+
+**3. 循环生成接下来的词（核心）**
+
+```Python
+for i in range(max_len - 1):
+    # 3.1 跑一次 Decoder
+    out = model.decode(memory, src_mask, ys, subsequent_mask(ys.size(1)).type_as(src.data))
+    
+    # 3.2 取出最后一个位置的输出结果
+    prob = model.generator(out[:, -1])
+    
+    # 3.3 贪心选择概率最大的词
+    _, next_word = torch.max(prob, dim=1)
+    next_word = next_word.data[0]
+    
+    # 3.4 拼接到已经生成的序列上
+    ys = torch.cat([ys, torch.zeros(1, 1).type_as(src.data).fill_(next_word)], dim=1)
+```
+
+- **第 3.1 步**：把之前 Encoder 提取的 `memory`，以及**当前已经生成的序列 `ys`**，一起喂给 Decoder。注意这里加上了 `subsequent_mask`（下三角掩码），防止模型偷看。
+- **第 3.2 步 (`out[:, -1]`)**：这是个很关键的细节！Decoder 会输出一个序列，但我们为了预测*下一个*词，只需要看 Decoder 对**当前生成的最后一个词**的理解。所以取出切片 `[:, -1]`，传给最后的线性分类层 `generator`，计算出词表里每个词的概率。
+- **第 3.3 步**：所谓**贪心解码（Greedy Decode）**，就是不去考虑长远，只看眼前。哪个词当前的概率最大（`torch.max`），就选哪个词作为 `next_word`。
+- **第 3.4 步**：把新预测出来的 `next_word` 像贪吃蛇一样拼接到 `ys` 的末尾。此时 `ys` 变长了（比如从 `[1]` 变成了 `[1, 5]`）。
+- **下一轮循环**：拿着变长的 `ys` 再次进入步骤 3.1……如此往复，直到达到最大长度 `max_len`。
+
+------
+
+### 二、 外部执行测试
+
+```Python
+test_model = make_model(11, 11, 2)
+test_model.eval()
+result = greedy_decode(test_model, src, src_mask, max_len=10, start_symbol=1)
+print(f"Input:  {src.tolist()[0]}")
+print(f"Output: {result.tolist()[0]}")
+print("(Random output expected - model is untrained)")
+```
+
+- **创建独立模型**：为了干净的测试环境，这里重新生成了一个小模型 `test_model`。
+- **`test_model.eval()`**：**非常重要的一步！** 这将模型切换为“评估/推理模式”。在这种模式下，模型会关闭 Dropout 等只在训练时起作用的机制，确保每次输入相同的句子，输出的结果都是确定的。
+- **执行与打印**：调用刚才写好的 `greedy_decode` 函数，要求它生成长度为 10 的序列。
+
+**为什么期待“随机输出 (Random output)”？**
+
+因为这里的模型刚刚被初始化，它内部的权重矩阵（几十万个参数）全是随机生成的数字。它就像一个刚出生的大脑，虽然神经元连接是对的，但还没学过任何人类语言。
+
+所以，它预测出的 `Output` 肯定是一串杂乱无章的数字（比如 `[1, 7, 4, 4, 9...]`）。
+
+**测试成功的标准：**
+
+作者不在乎这串数字有没有意义，只要这段代码**能跑通、没报错死机、最后顺理成章地吐出了一个长度为 10 的张量**，就说明：
+
+1. Encoder 和 Decoder 之间的信息传递（`memory` 的交互）是正确的。
+2. 自回归循环拼接维度没有报错。
+3. 整个 Transformer 架构已经具备了开始被训练的基础条件！
