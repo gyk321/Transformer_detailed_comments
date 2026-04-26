@@ -37,9 +37,19 @@
 
 ### 安装依赖
 
+方式一：使用 requirements.txt 一键安装（推荐）
+
+```bash
+pip install -r requirements.txt
+```
+
+方式二：手动安装核心依赖
+
 ```bash
 pip install torch matplotlib numpy jupyter
 ```
+
+> **注意**：PyTorch 安装取决于你的 CUDA 版本，如需 GPU 支持请参考 [PyTorch 官网](https://pytorch.org/get-started/locally/) 选择对应版本。
 
 ### 运行基础模型
 
@@ -90,6 +100,7 @@ Transformer_from_scratch/
 ├── Transformer_basic.py          # 核心实现：完整 Transformer 模型代码
 ├── Transformer_analysis.ipynb    # 交互式分析 Notebook（含可视化）
 ├── Transformer_full_structure.md # 逐模块中文详解文档
+├── requirements.txt              # Python 依赖清单（含版本锁定）
 ├── assets/                       # 架构图与截图
 │   ├── Snipaste_2026-04-22_19-02-51-1776896980586-1.png
 │   ├── Snipaste_2026-04-24_23-37-26.png
@@ -122,6 +133,46 @@ Transformer_from_scratch/
 | Small | 2 | 128 | 512 | 4 | ~500K |
 | Base | 6 | 512 | 2048 | 8 | ~59.5M |
 | Big | 6 | 1024 | 4096 | 16 | ~268.5M |
+
+## 依赖详情
+
+> **更新时间**：2026-04-26 | **Python 版本**：3.14 | **生成方法**：`pip freeze`
+
+### 核心依赖（直接依赖）
+
+项目代码中直接 `import` 的库：
+
+| 库 | 版本 | 用途 |
+|----|------|------|
+| `torch` | 2.11.0 | 深度学习框架，模型定义与训练 |
+| `matplotlib` | 3.10.8 | Notebook 中的图表可视化 |
+| `numpy` | 2.4.3 | 数值计算，可视化数据处理 |
+
+### Jupyter 生态依赖（Notebook 交互所需）
+
+| 库 | 版本 | 用途 |
+|----|------|------|
+| `jupyter_client` | 8.8.0 | Jupyter 客户端协议 |
+| `jupyter_server` | 2.17.0 | Jupyter 服务端 |
+| `jupyterlab` | 4.5.6 | JupyterLab 交互界面 |
+| `nbformat` | 5.10.4 | Notebook 文件格式读写 |
+| `nbclient` | 0.10.4 | Notebook 程序化执行 |
+| `ipykernel` | 7.2.0 | Jupyter Python 内核 |
+| `ipython` | 9.12.0 | 交互式 Python 运行时 |
+
+### requirements.txt 说明
+
+`requirements.txt` 锁定了所有直接依赖与 Jupyter 生态依赖的精确版本。重新生成方法：
+
+```bash
+# 生成完整依赖
+pip freeze > requirements.txt
+
+# 仅提取项目相关依赖
+pip freeze | findstr /i "torch matplotlib numpy jupyter nbformat nbclient ipykernel ipython"
+```
+
+> **提示**：`torch` 版本后缀（如 `+cpu`）取决于安装源。如需 GPU 版本，请访问 [PyTorch 官网](https://pytorch.org/get-started/locally/) 获取对应安装命令。
 
 ## 关键设计说明
 

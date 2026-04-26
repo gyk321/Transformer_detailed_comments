@@ -1,0 +1,21 @@
+# ============================================
+# Transformer from Scratch - Python Dependencies
+# ============================================
+# 生成方法: pip freeze | findstr /i "torch matplotlib numpy jupyter nbformat nbclient ipykernel ipython"
+# 更新时间: 2026-04-26
+# Python 版本: 3.14
+# ============================================
+
+# --- 核心依赖 (直接依赖) ---
+torch==2.11.0
+matplotlib==3.10.8
+numpy==2.4.3
+
+# --- Jupyter 生态 (交互式 Notebook) ---
+jupyter_client==8.8.0
+jupyter_server==2.17.0
+jupyterlab==4.5.6
+nbformat==5.10.4
+nbclient==0.10.4
+ipykernel==7.2.0
+ipython==9.12.0
